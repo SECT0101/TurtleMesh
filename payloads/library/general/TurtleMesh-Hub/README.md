@@ -16,13 +16,13 @@ The Hub connects to a Meshtastic radio over Wi-Fi or USB and serves a web consol
 | **Mesh chat** | Every channel, plus direct messages to any node, from the web console. Delivery status is shown for messages you send. |
 | **Nodes** | Every node heard: name, hardware, role, battery, SNR, hops, last heard, and range and bearing from the Hub. Give nodes labels, **traceroute** them, or **request a position**. Download the packet log as CSV or pcap. |
 | **Map** | Mesh nodes, TAK contacts and the Hub on the web map (Leaflet, built in). Tiles are cached on the Hub (USB storage when attached), and **Save this area offline** stores USGS maps for use without internet. |
-| **Hub on the mesh** | The Hub's position goes out on the mesh every `MESH_POS_INTERVAL` seconds (15 min), so other nodes see where it is. |
+| **Hub on the mesh** | Off until you pick a channel (Radio > *Hub position on the mesh*). Then the Hub's position goes out every `MESH_POS_INTERVAL` seconds (15 min), on a channel with its own key only. |
 | **Radio settings** | Long and short name; channels (name, role, new random key, default key or no encryption) and the share link; LoRa, device, position, telemetry, network, Bluetooth, MQTT, display and power settings; restart. |
 | **Mesh watch** | Learns which nodes belong for `MESH_LEARN_MIN` minutes (60), then raises **New mesh node** for any node not seen before. **Watch** a node to get **Node quiet** after `NODE_QUIET_MIN` minutes of silence (and **Node back**) and **Low battery** under `LOW_BATTERY` %. A quiet sensor node is critical. **Radio link lost / restored** too. |
 | **Sensors** | Detection-sensor packets (a radio running Meshtastic's detection-sensor module, like a door contact or PIR) become alerts. Mark a node as a **Sensor** and its text messages become alerts too. |
-| **Alerts over LoRa** | Alerts go out on a channel or as a DM (`LORA_ALERT_TO`), like `[TURTLE-MESH] WARN Node quiet: Gate 2 - Not heard on the mesh for 61m`. While **TurtleTAK** runs on the same Hub, its alerts (new devices, ARP spoofing, link tamper) go out too. |
+| **Alerts over LoRa** | Off until you choose where they go (Alerts tab): a channel, or a DM to one node (`LORA_ALERT_TO`). A public channel works but gets a warning, since alerts can carry device names, IP and MAC addresses. Alerts look like `[TURTLE-MESH] WARN Node quiet: Gate 2 - Not heard on the mesh for 61m`. While **TurtleTAK** runs on the same Hub, its alerts (new devices, ARP spoofing, link tamper) go out too. |
 | **DM commands** | Any node can direct-message the Hub's radio: `status`, `alerts`, `where`, `nodes`, `help`. Answers are short enough for LoRa. `MESH_COMMANDS_FROM` limits who can ask. |
-| **Mesh ↔ TAK** | Optional. Mesh nodes show on TAK as markers. One mesh channel and TAK All Chat Rooms carry each other's messages. Meshtastic **ATAK plugin** users (TAK packets on the mesh) show on the TAK Server with their callsign, team and role. Alerts go to TAK as markers and chat lines. TAK users can DM the Hub the same commands. |
+| **Mesh ↔ TAK** | Optional. Mesh nodes show on TAK as markers. One mesh channel and TAK All Chat Rooms carry each other's messages, once you pick a channel with its own key (a public channel can't be bridged). Meshtastic **ATAK plugin** users (TAK packets on the mesh) show on the TAK Server with their callsign, team and role. Alerts go to TAK as markers and chat lines. TAK users can DM the Hub the same commands. |
 | **MQTT proxy** | The Hub carries the radio's MQTT traffic to your own broker (`MQTT_HOST`), so a USB radio without Wi-Fi can still use MQTT. *Set up the radio for it* turns on the radio's MQTT client proxy. |
 | **Alert settings** | Each alert type on or off; the lowest level for TAK markers, TAK chat lines and LoRa; and quiet hours (for example `22-06`). |
 | **Web console** | Status, Map, Mesh Chat, Nodes, Alerts, Radio, TAK, Settings and Setup on port **8485**, on every interface: USB-C host, RJ45, Wi-Fi and VPN. Password protected. |
@@ -55,7 +55,7 @@ Web console, with demo data.
    - **Alerts over LoRa** (Alerts tab) and the **MQTT proxy** (Settings, then TAK > *Set up the radio for it*).
 6. *Run TurtleMesh at boot* is on by default.
 
-The Hub runs one payload at a time. TurtleMesh reads TurtleTAK's server settings whenever TurtleTAK is installed, but relays TurtleTAK's alerts over LoRa only while TurtleTAK is running.
+The Hub runs one payload at a time. TurtleMesh reads TurtleTAK's server settings whenever TurtleTAK is installed, but relays TurtleTAK's alerts over LoRa only while TurtleTAK is running. To run both, use [TurtleShell](https://github.com/SECT0101/TurtleShell): one payload that runs TurtleTAK and TurtleMesh together, shares the radio's GPS fix with TurtleTAK, and leaves the LED to TurtleTAK.
 
 Running the payload again restarts the service with that version. The service and web page in `/root/turtlemesh/app/` are rewritten on every run, and your settings, certificates, node labels and chat history are kept.
 
@@ -71,6 +71,16 @@ In **Auto**, TurtleMesh uses the first of these that has a usable position:
 6. **Network**: public IP location, city level only. TAK shows a 25 km circle.
 
 Phone positions count while they're newer than `ANCHOR_MAX_AGE` (30 min). Pick a **primary source** in Setup > Location to put it first; the rest stay as fallback in the same order.
+
+## Mesh channels and privacy
+
+Channel 0 on most meshes is public: it uses no key, the default key or a well-known "simple" key, so anyone with Meshtastic can read it. TurtleMesh sends nothing on any channel until you choose one:
+
+- **Alerts over LoRa**: off until you choose a channel or a node (Alerts tab). A public channel is allowed, with a warning.
+- **TAK chat bridge** and **Hub position**: only channels with their own key. Public channels are shown but can't be picked.
+- The Radio tab marks each channel's key as *public* or *private*. Use *new random key* there to make a private channel, then share it with the share link.
+
+Updating from 1.0.0 turns off the old channel 0 defaults once and posts a Hub notification, so you can pick channels.
 
 ## LED
 
@@ -98,16 +108,16 @@ Every setting is in `/root/turtlemesh/default.cfg` as `KEY: value`. Change them 
 | `CALLSIGN` | `TURTLE-MESH` | Name on TAK and in alerts |
 | `LOC_MODE` | `auto` | Primary location source: `auto`, `radio`, `gps`, `atak`, `mesh`, `site`, `manual` or `ip` |
 | `MY_ATAK` / `MY_NODE` | | Your ATAK callsign / your mesh node (`!a1b2c3d4`) for the phone sources |
-| `MESH_POS_INTERVAL` | `900` | Seconds between the Hub's positions on the mesh (`0` = off) |
+| `MESH_POS_CHANNEL` / `MESH_POS_INTERVAL` | `-1` / `900` | Channel for the Hub's position (`-1` = off; channels with their own key only) and seconds between positions |
 | `MESH_LEARN_MIN` | `60` | Minutes of learning before *New mesh node* alerts |
 | `NODE_QUIET_MIN` / `LOW_BATTERY` | `60` / `20` | Watched node limits |
-| `LORA_ALERTS` / `LORA_ALERT_MIN` | `1` / `warning` | Alerts over LoRa and the lowest level sent |
-| `LORA_ALERT_CHANNEL` / `LORA_ALERT_TO` | `0` / | Channel, or a `!node` id for DMs |
+| `LORA_ALERTS` / `LORA_ALERT_MIN` | `0` / `warning` | Alerts over LoRa and the lowest level sent |
+| `LORA_ALERT_CHANNEL` / `LORA_ALERT_TO` | / | Channel for alerts (none until you choose), or a `!node` id for DMs |
 | `LORA_ALERT_SOURCES` | `turtletak,turtlemesh` | Whose alerts go out over LoRa |
 | `MESH_COMMANDS_FROM` | | Blank = any node, or a list of `!node` ids |
 | `TAK` / `TAK_FROM_TURTLETAK` | `1` / `1` | TAK on, and use TurtleTAK's server and certificates |
 | `BRIDGE_NODES` / `BRIDGE_ATAK_PLUGIN` | `1` / `1` | Mesh nodes and ATAK plugin users on TAK |
-| `BRIDGE_CHAT_CHANNEL` | `0` | Mesh channel bridged to TAK All Chat Rooms (`-1` = off) |
+| `BRIDGE_CHAT_CHANNEL` | `-1` | Mesh channel bridged to TAK All Chat Rooms (`-1` = off; channels with their own key only) |
 | `MQTT_PROXY` / `MQTT_HOST` / `MQTT_PORT` | `0` / / `1883` | MQTT proxy to your broker (`MQTT_TLS`, `MQTT_USER`, `MQTT_PASSWORD`) |
 | `ALERTS_ON` | all types | Alert types that are raised |
 | `QUIET_HOURS` | | For example `22-06` |

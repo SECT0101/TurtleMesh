@@ -2,7 +2,7 @@
 # Title: TurtleMesh Hub Edition
 # Description: Meshtastic on the LAN Turtle Hub - a Meshtastic radio over Wi-Fi or USB with mesh chat, a node map, mesh watch and sensor alerts, alerts over LoRa, a mesh <-> TAK bridge, DM commands, a private MQTT proxy and a web console
 # Author: SECT0101
-# Version: 1.0.0
+# Version: 1.0.1
 # Category: General
 # Target: LAN Turtle Hub with a Meshtastic radio (Wi-Fi on the same network, or USB on the Hub)
 #
@@ -52,6 +52,9 @@
 #   /root/turtlemesh/app/            the service and web page - rewritten from this payload on every run
 #
 # Meshtastic(R) is a registered trademark of Meshtastic LLC. Community payload, not supported by Hak5.
+#
+case "$(head -c 8192 "$0" 2>/dev/null)" in *$'\r'*) _lf="/tmp/.$(basename "$0").$$.lf"; tr -d '\r' < "$0" > "$_lf" && echo "fixed Windows line endings in $0" >&2 && exec bash "$_lf" "$@";; esac #
+# ^ Pasted or saved on Windows? That line removes Windows line endings and runs the payload again.
 
 BASE="${TM_BASE:-/root/turtlemesh}"
 APP="$BASE/app"
@@ -116,7 +119,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from xml.sax.saxutils import escape as _xesc
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 # ---- DNS: the Hub's C library (musl) can fail a lookup that asks for IPv4 and IPv6 at once
 # ("[Errno -5] Name has no usable address") while an IPv4-only lookup works - that is why ping works.
@@ -192,7 +195,7 @@ DEFAULTS = [
     ("RADIO_DEV", "auto"),           # USB radio: auto | /dev/ttyACM0 | /dev/ttyUSB0
     ("RADIO_CLAIM_USB", "1"),        # 1 = claim and power the Hub's dynamic USB port for a USB radio
     ("MESH_POS_INTERVAL", "900"),    # seconds between the Hub's position on the mesh (0 = off)
-    ("MESH_POS_CHANNEL", "0"),
+    ("MESH_POS_CHANNEL", "-1"),      # channel for the Hub's position (-1 = off); private channels only
     ("# Mesh -> TAK bridge", None),
     ("TAK", "1"),                    # 1 = connect to a TAK Server
     ("TAK_FROM_TURTLETAK", "1"),     # 1 = use TurtleTAK's server and certificates when it is installed
@@ -212,7 +215,7 @@ DEFAULTS = [
     ("SA_INTERVAL", "60"),
     ("BRIDGE_NODES", "1"),           # mesh nodes with a position -> TAK markers
     ("BRIDGE_NODE_MAX_AGE", "7200"), # seconds: nodes not heard for longer are not sent
-    ("BRIDGE_CHAT_CHANNEL", "0"),    # mesh channel linked with TAK All Chat Rooms (-1 = off)
+    ("BRIDGE_CHAT_CHANNEL", "-1"),   # mesh channel linked with TAK All Chat Rooms (-1 = off); private channels only
     ("BRIDGE_ATAK_PLUGIN", "1"),     # Meshtastic ATAK plugin traffic (PLI and chat) -> TAK
     ("# Location", None),
     ("LOC_MODE", "auto"),            # primary source: auto | radio | gps | atak | mesh | site | manual | ip (then the rest, in that order)
@@ -250,10 +253,10 @@ DEFAULTS = [
     ("HUB_NOTIFY", "1"),
     ("C2_NOTIFY", "0"),
     ("# Alerts over LoRa", None),
-    ("LORA_ALERTS", "1"),            # send alerts as mesh text (works when the network is down)
+    ("LORA_ALERTS", "0"),            # send alerts as mesh text (works when the network is down)
     ("LORA_ALERT_SOURCES", "turtletak,turtlemesh"),
     ("LORA_ALERT_MIN", "warning"),
-    ("LORA_ALERT_CHANNEL", "0"),
+    ("LORA_ALERT_CHANNEL", ""),      # channel for alerts (blank = none chosen yet); a public channel gets a warning
     ("LORA_ALERT_TO", ""),           # blank = the channel, or a node id (!a1b2c3d4) for a direct message
     ("# Mesh commands", None),
     ("MESH_COMMANDS", "1"),          # answer status, alerts, where, nodes, help sent to the Hub's radio
@@ -280,6 +283,7 @@ DEFAULTS = [
     ("# Hub", None),
     ("LED", "1"),
     ("RUN_AT_BOOT", "1"),
+    ("SETTINGS_VERSION", "2"),
     ("WEB", "1"),
     ("WEB_PORT", "8485"),
     ("WEB_BIND", "0.0.0.0"),
@@ -290,13 +294,30 @@ CFG = {}
 CFG_LOCK = threading.Lock()
 
 
+MIGRATED = []
+
+
 def cfg_load():
     vals = {k: v for k, v in DEFAULTS if v is not None}
+    seen = set()
     if os.path.exists(CFG_FILE):
         for line in open(CFG_FILE, encoding="utf-8", errors="replace"):
             if ":" in line and not line.lstrip().startswith("#"):
                 k, v = line.split(":", 1)
                 vals[k.strip()] = v.strip()
+                seen.add(k.strip())
+    if seen and "SETTINGS_VERSION" not in seen:
+        # settings from 1.0.0, which sent alerts, TAK chat and the Hub position on channel 0 by default
+        if vals.get("LORA_ALERT_CHANNEL") == "0" and vals.get("LORA_ALERTS") == "1" and not vals.get("LORA_ALERT_TO"):
+            vals["LORA_ALERTS"], vals["LORA_ALERT_CHANNEL"] = "0", ""
+            MIGRATED.append("alerts over LoRa")
+        if vals.get("BRIDGE_CHAT_CHANNEL") == "0":
+            vals["BRIDGE_CHAT_CHANNEL"] = "-1"
+            MIGRATED.append("the TAK chat bridge")
+        if vals.get("MESH_POS_CHANNEL") == "0":
+            vals["MESH_POS_CHANNEL"] = "-1"
+            MIGRATED.append("the Hub's position on the mesh")
+        vals["SETTINGS_VERSION"] = "2"
     with CFG_LOCK:
         CFG.clear()
         CFG.update(vals)
@@ -424,6 +445,9 @@ def led_link():
         led("G SINGLE")
 
 
+IN_SHELL = bool(os.environ.get("TURTLESHELL"))
+
+
 def led(state=None, flash=None, secs=30):
     """state = steady LED for the current link state; flash = temporary state (alerts)."""
     if state:
@@ -436,6 +460,8 @@ def led(state=None, flash=None, secs=30):
         want = LED_STATE.get("flash", want)
     if not cfgb("LED"):
         want = "OFF"
+    if IN_SHELL:                       # TurtleShell: TurtleTAK owns the Hub's LED
+        return
     if want != LED_STATE["shown"]:
         LED_STATE["shown"] = want
         hub("LED", *want.split())
@@ -1644,7 +1670,17 @@ def mesh_anchor():
     return None
 
 
+def share_radio_fix():
+    """Write the radio's GPS fix where TurtleTAK can read it (TurtleShell, or both payloads on one Hub)."""
+    r = radio_fix()
+    p = os.path.join(BASE, "radio_fix.json")
+    if r and time.time() - getattr(share_radio_fix, "last", 0) > 30:
+        share_radio_fix.last = time.time()
+        jsave(p, {"lat": r[0], "lon": r[1], "alt": r[3], "time": time.time()})
+
+
 def locate():
+    share_radio_fix()
     mode = cfg("LOC_MODE", "auto").lower()
     order = LOC_ORDER if mode not in LOC_ORDER else [mode] + [m for m in LOC_ORDER if m != mode]
     for m in order:
@@ -1933,6 +1969,12 @@ class Mesh:
     def short_of(self, num):
         return self.nodes.get(num, {}).get("user", {}).get("short_name") or mp.node_id(num)[-4:]
 
+    def chan_private(self, idx):
+        """True only for a channel with its own AES key. No key, the default key and the well-known
+        "simple" keys can be read by anyone with Meshtastic, so they count as public."""
+        c = self.channels.get(idx) or self.channels_all.get(idx)
+        return bool(c) and str(c.get("psk_kind", "")).startswith("AES")
+
     def chan_label(self, idx):
         c = self.channels.get(idx)
         if not c:
@@ -2115,7 +2157,12 @@ class Mesh:
             return False, "no Hub position" if p.get("lat") is None else "radio not connected"
         if p.get("src") == "radio":
             return False, "the radio sends its own GPS position"
-        self.queue(mp.position_packet(p["lat"], p["lon"], None, int(time.time()), cfgi("MESH_POS_CHANNEL", 0),
+        ch = cfgi("MESH_POS_CHANNEL", -1)
+        if ch < 0:
+            return False, "the Hub's position on the mesh is off (Radio > Hub position on the mesh)"
+        if not self.chan_private(ch):
+            return False, "%s is a public channel - the Hub's position only goes out on a channel with its own key" % self.chan_label(ch)
+        self.queue(mp.position_packet(p["lat"], p["lon"], None, int(time.time()), ch,
                                       self.hop_limit, source=1))
         self.last_pos = time.time()
         if self.my_num is not None:
@@ -2178,7 +2225,7 @@ class Mesh:
             self.on_sensor(frm, txt)
         if direct and cfgb("MESH_COMMANDS"):
             self.command(frm, txt)
-        elif not direct and ch == cfgi("BRIDGE_CHAT_CHANNEL", 0):
+        elif not direct and ch == cfgi("BRIDGE_CHAT_CHANNEL", -1) and self.chan_private(ch):
             BRIDGE.mesh_chat_to_tak(frm, txt)
 
     def on_sensor(self, frm, txt):
@@ -2628,6 +2675,8 @@ class LoraAlerts:
                 num = int(to.lstrip("!"), 16)
             except ValueError:
                 num = None
+        if num is None and cfg("LORA_ALERT_CHANNEL").strip() == "":
+            return                                  # no channel chosen yet
         ok, msg = MESH.send_text(self.text(a, source)[:200], to=num, channel=cfgi("LORA_ALERT_CHANNEL", 0), source="alert")
         if not ok:
             self.seen.discard(a["id"])          # try again on the next pass (radio not connected yet)
@@ -2721,8 +2770,9 @@ class MeshTakBridge:
             except Exception as e:
                 log("bridge: %s" % e, "warning")
 
-    def mesh_chat_to_tak(self, frm, txt, cs=None, uid=None):
-        if cfgi("BRIDGE_CHAT_CHANNEL", 0) < 0 or not TAK.connected():
+    def mesh_chat_to_tak(self, frm, txt, cs=None, uid=None, plugin=False):
+        # ATAK plugin chat follows BRIDGE_ATAK_PLUGIN; channel chat needs a bridged (private) channel
+        if (not plugin and cfgi("BRIDGE_CHAT_CHANNEL", -1) < 0) or not TAK.connected():
             return
         uid = uid or self.node_uid(frm)
         cs = cs or MESH.name_of(frm)
@@ -2739,14 +2789,15 @@ class MeshTakBridge:
 
     def tak_chat_to_mesh(self, cs, sender_uid, room, text):
         """TAK GeoChat to All Chat Rooms -> mesh channel as '[callsign] text'. DMs are never bridged."""
-        if cfgi("BRIDGE_CHAT_CHANNEL", 0) < 0 or room != "All Chat Rooms":
+        ch = cfgi("BRIDGE_CHAT_CHANNEL", -1)
+        if ch < 0 or room != "All Chat Rooms" or not MESH.chan_private(ch):
             return
         if sender_uid.startswith("TurtleMesh.") or sender_uid == my_uid() or text.startswith("[%s]" % cfg("CALLSIGN")):
             return
         wait = 5 - (time.time() - self.last_to_mesh)
         if wait > 0:
             time.sleep(min(5, wait))
-        ok, _ = MESH.send_text("[%s] %s" % (cs, text), channel=cfgi("BRIDGE_CHAT_CHANNEL", 0), source="tak")
+        ok, _ = MESH.send_text("[%s] %s" % (cs, text), channel=ch, source="tak")
         if ok:
             self.last_to_mesh = time.time()
             self.stats["chat_to_mesh"] += 1
@@ -2812,7 +2863,7 @@ class MeshTakBridge:
                 self.stats["atak_to_tak"] += 1
         msg = txt(pkt.get("chat", {}).get("message"))
         if msg:
-            self.mesh_chat_to_tak(frm, msg, cs=cs, uid=uid)
+            self.mesh_chat_to_tak(frm, msg, cs=cs, uid=uid, plugin=True)
 
 
 BRIDGE = MeshTakBridge()
@@ -3148,7 +3199,8 @@ def state_json():
                "turtletak": {"installed": os.path.exists(os.path.join(TURTLETAK_BASE, "default.cfg")), "running": turtletak_running(),
                              "port": turtletak_cfg().get("WEB_PORT", "8484")}}
     with MESH.lock:
-        chans = sorted(({"index": c["index"], "name": MESH.chan_label(c["index"]), "role": c.get("role")}
+        chans = sorted(({"index": c["index"], "name": MESH.chan_label(c["index"]), "role": c.get("role"),
+                         "private": MESH.chan_private(c["index"]), "key": c.get("psk_kind", "")}
                         for c in MESH.channels.values()), key=lambda c: c["index"])
         chat = list(MESH.chat[-300:])
     out["mesh"] = {"link": MESH.link, "error": MESH.error, "me": mp.node_id(MESH.my_num) if MESH.my_num else "",
@@ -3157,10 +3209,14 @@ def state_json():
                    "firmware": MESH.metadata.get("firmware", ""), "channels": chans, "chat": chat,
                    "nodes": MESH.node_rows(), "learning": max(0, int(MESH.learn_until - now)), "known": len(MESH.known),
                    "sig": MESH.sig.stats(MESH.name_of) if hasattr(MESH.sig, "stats") else {}}
-    out["bridge"] = dict(BRIDGE.stats, nodes=cfgb("BRIDGE_NODES"), chat_channel=cfgi("BRIDGE_CHAT_CHANNEL", 0),
+    out["bridge"] = dict(BRIDGE.stats, nodes=cfgb("BRIDGE_NODES"), chat_channel=cfgi("BRIDGE_CHAT_CHANNEL", -1),
                          atak=cfgb("BRIDGE_ATAK_PLUGIN"))
     out["mqtt"] = {"on": cfgb("MQTT_PROXY"), "state": MQTT.state, "error": MQTT.error, **MQTT.stats}
-    out["lora"] = {"on": cfgb("LORA_ALERTS"), "min": cfg("LORA_ALERT_MIN"), "to": cfg("LORA_ALERT_TO") or "channel %s" % cfg("LORA_ALERT_CHANNEL")}
+    lch = cfg("LORA_ALERT_CHANNEL").strip()
+    out["lora"] = {"on": cfgb("LORA_ALERTS") and bool(cfg("LORA_ALERT_TO").strip() or lch), "min": cfg("LORA_ALERT_MIN"),
+                   "to": cfg("LORA_ALERT_TO") or (MESH.chan_label(int(lch)) if lch.lstrip("-").isdigit() else "no channel chosen"),
+                   "public": bool(lch.isdigit() and not cfg("LORA_ALERT_TO").strip() and not MESH.chan_private(int(lch)))}
+    out["mesh_pos_channel"] = cfgi("MESH_POS_CHANNEL", -1)
     return json.dumps(out, default=str).encode()
 
 
@@ -3498,6 +3554,10 @@ class Web(BaseHTTPRequestHandler):
                 d = json.loads(self.body() or b"{}")
                 known = {k for k, v in DEFAULTS if v is not None} - {"WEB_PASS_HASH", "UID"}
                 ch = {k: v for k, v in d.items() if k in known and not (k in SECRET_KEYS and v == "")}
+                for key, what in (("BRIDGE_CHAT_CHANNEL", "the TAK chat bridge"), ("MESH_POS_CHANNEL", "the Hub's position")):
+                    v = str(ch.get(key, "")).strip()
+                    if v.isdigit() and not MESH.chan_private(int(v)):
+                        return self.send(400, json.dumps({"ok": False, "error": "%s is a public channel (no key, the default key or a simple key) - %s only uses a channel with its own key" % (MESH.chan_label(int(v)), what)}).encode())
                 cfg_set(ch)
                 if set(ch) & {"TAK_HOST", "TAK_PORT", "TAK_PROTO", "TAK_VERIFY_HOST"}:
                     TAK.reconnect()
@@ -3614,6 +3674,10 @@ def main():
     log("%s %s %s starting (python %s)" % (PRODUCT, EDITION, VERSION, sys.version.split()[0]))
     led("SETUP")
     first_run_password()
+    if MIGRATED:
+        msg = "Mesh sharing is now off until you pick a channel: %s. Most channel 0s are public - choose a channel with its own key (Alerts, TAK and Radio tabs)." % ", ".join(MIGRATED)
+        log(msg, "warning")
+        notify("warning", msg)
     status_collect()
     if cfgb("RUN_AT_BOOT"):
         hub("BOOT_PAYLOAD", "enable")
@@ -3630,7 +3694,7 @@ def main():
         pass
     finally:
         save_state()
-        hub("LED", "OFF") if not cfgb("LED") else None
+        hub("LED", "OFF") if not cfgb("LED") and not IN_SHELL else None
 
 
 if __name__ == "__main__":
@@ -6348,7 +6412,8 @@ footer{color:var(--dim);font-size:12px;text-align:center;padding:20px}details{ma
     <div class="frm"><label>Map marker from</label><select id="al-marker"><option>info</option><option>warning</option><option>critical</option></select>
       <label>TAK chat line from</label><select id="al-chat"><option>info</option><option>warning</option><option>critical</option></select>
       <label>Over LoRa from</label><select id="al-lora"><option>info</option><option>warning</option><option>critical</option></select>
-      <label>Over LoRa to</label><input id="al-to" placeholder="blank = channel, or !node id">
+      <label>Over LoRa to</label><div class="row" style="margin:0"><select id="al-dest" onchange="loraDest()"></select><input id="al-to" placeholder="!node id" size="12" style="display:none"></div>
+      <span></span><div><p id="al-lnow" style="margin:0"></p><p class="warn" id="al-lwarn" style="display:none;margin:4px 0 0"></p></div>
       <label>Quiet hours</label><div class="row" style="margin:0"><input id="al-quiet" placeholder="e.g. 22-06" size="12"><label><input type="checkbox" id="al-qcrit"> critical still goes out</label></div></div>
     <div class="row"><button class="b" onclick="saveAlertCfg()">Save alert settings</button><span class="dim" id="al-qnow"></span></div></div>
   <div class="row"><button class="b" onclick="act('test_alert')">Send test alert</button><button class="b red" onclick="if(confirm('Clear TurtleMesh alerts?'))act('clear_alerts')">Clear list</button></div>
@@ -6368,7 +6433,8 @@ footer{color:var(--dim);font-size:12px;text-align:center;padding:20px}details{ma
   <div class="card" style="margin-top:12px"><h3>Channels</h3><table id="tb-ch"></table>
     <div class="row"><select id="c-idx"></select><input id="c-name" placeholder="name" maxlength="11" size="12"><select id="c-psk"><option value="">keep key</option><option value="random">new random key</option><option value="default">default key</option><option value="none">no encryption</option></select>
       <select id="c-role"><option value="">keep role</option><option value="1">primary</option><option value="2">secondary</option><option value="0">disabled</option></select><button class="b" onclick="saveChan()">Save channel</button></div>
-    <p class="dim" id="share"></p></div>
+    <p class="dim" id="share"></p>
+    <div class="row"><label>Hub position on the mesh</label><select id="r-pos" onchange="setCfg({MESH_POS_CHANNEL:this.value})"></select><span class="dim">every MESH_POS_INTERVAL seconds, private channels only</span></div></div>
   <div class="card" style="margin-top:12px"><h3>Radio settings</h3><p class="dim">Only changed values are sent. Most changes restart the radio.</p><div class="cfg" id="r-set"></div>
     <div class="row"><button class="b" onclick="saveRadio()">Save radio settings</button></div></div>
 </section>
@@ -6377,7 +6443,7 @@ footer{color:var(--dim);font-size:12px;text-align:center;padding:20px}details{ma
     <div class="card"><h3>Mesh &harr; TAK bridge</h3><div class="kv" id="k-bridge"></div>
       <div class="row"><label><input type="checkbox" id="br-nodes" onchange="setCfg({BRIDGE_NODES:this.checked?'1':'0'})"> Mesh nodes as TAK markers</label></div>
       <div class="row"><label><input type="checkbox" id="br-atak" onchange="setCfg({BRIDGE_ATAK_PLUGIN:this.checked?'1':'0'})"> Meshtastic ATAK plugin users on TAK</label></div>
-      <div class="row"><label>Chat: mesh channel</label><select id="br-ch" onchange="setCfg({BRIDGE_CHAT_CHANNEL:this.value})"></select><span class="dim">&harr; TAK All Chat Rooms</span></div></div>
+      <div class="row"><label>Chat: mesh channel</label><select id="br-ch" onchange="setCfg({BRIDGE_CHAT_CHANNEL:this.value})"></select><span class="dim">&harr; TAK All Chat Rooms</span></div><p class="dim">Only a channel with its own key can be bridged, so TAK chat never goes out on a public channel.</p></div>
     <div class="card"><h3>MQTT proxy</h3><p class="dim">The Hub carries the radio's MQTT traffic to your own broker (useful for a USB radio with no Wi-Fi).</p>
       <div class="kv" id="k-mqtt"></div><div class="row"><button class="b" onclick="act('mqtt_radio_setup')">Set up the radio for it</button></div></div>
   </div>
@@ -6451,14 +6517,14 @@ function render(){if(!ST)return;const s=ST,m=s.mesh,t=s.tak,st=s.status||{};$("v
   if(tab=="status"){kv("k-radio",[["Link",`<span class="${m.link=="connected"?"ok":"warn"}">${esc(m.link)}</span>`],m.error?["Error",`<span class="crit">${esc(m.error)}</span>`]:null,["Connection",esc(m.conn+(m.conn=="wifi"?" "+m.host:""))],["Radio",esc(m.name+" "+m.me)],["Region",esc(m.region)],["Firmware",esc(m.firmware)],["Hop limit",m.hop_limit]]);
     kv("k-mesh",[["Nodes",m.nodes.filter(n=>!n.me).length+" known, "+heard+" heard in 1 h"],["Channels",esc(m.channels.map(c=>c.name).join(", "))],["Mesh watch",m.learning?"learning ("+ago(m.learning)+" left)":m.known+" known nodes"],["Watched",m.nodes.filter(n=>n.watch).length+" nodes, "+m.nodes.filter(n=>n.sensor).length+" sensors"]]);
     kv("k-tak",[["Server",esc(t.host+":"+t.port+" ("+t.proto+")")+(t.source=="TurtleTAK"?' <span class="tag g">TurtleTAK</span>':"")],["State",`<span class="${t.state=="connected"?"ok":"warn"}">${esc(t.enabled?t.state:"off")}</span>`],t.error?["Error",`<span class="crit">${esc(t.error)}</span>`]:null,["Nodes sent",s.bridge.nodes_to_tak],["Chat mesh \u2192 TAK",s.bridge.chat_to_tak],["Chat TAK \u2192 mesh",s.bridge.chat_to_mesh]]);
-    kv("k-lora",[["Alerts over LoRa",s.lora.on?"on, "+esc(s.lora.min)+" and up, to "+esc(s.lora.to):"off"],["MQTT proxy",s.mqtt.on?esc(s.mqtt.state)+" ("+s.mqtt.up+" up / "+s.mqtt.down+" down)":"off"],["TurtleTAK",s.turtletak.running?'<span class="ok">running</span> - its alerts go out over LoRa':s.turtletak.installed?"installed, not running":"not installed"]]);
+    kv("k-lora",[["Alerts over LoRa",s.lora.on?"on, "+esc(s.lora.min)+" and up, to "+esc(s.lora.to)+(s.lora.public?' <span class="warn">(public channel)</span>':""):"off (Alerts tab)"],["MQTT proxy",s.mqtt.on?esc(s.mqtt.state)+" ("+s.mqtt.up+" up / "+s.mqtt.down+" down)":"off"],["TurtleTAK",s.turtletak.running?'<span class="ok">running</span> - its alerts go out over LoRa':s.turtletak.installed?"installed, not running":"not installed"]]);
     $("remarks").textContent=s.status_text}
   if(tab=="map")drawMap();
   if(tab=="chat")renderChat();
   if(tab=="nodes")renderNodes();
-  if(tab=="alerts"){$("al-qnow").textContent=s.quiet?"Quiet hours now":"";$("alertlist").innerHTML=s.alerts.map(a=>`<div class="alert lvl-${a.level}"><b>${esc(a.title)}</b> <span class="dim">${tm(a.time)} &middot; ${esc(a.kind)} &middot; ${esc(a.source||"TurtleMesh")}</span><br>${esc(a.detail)}</div>`).join("")||'<p class="dim">No alerts.</p>'}
+  if(tab=="alerts"){$("al-qnow").textContent=s.quiet?"Quiet hours now":"";const ln=$("al-lnow");if(ln)ln.innerHTML=loraNow();if($("al-dest").options.length)fillDest();$("alertlist").innerHTML=s.alerts.map(a=>`<div class="alert lvl-${a.level}"><b>${esc(a.title)}</b> <span class="dim">${tm(a.time)} &middot; ${esc(a.kind)} &middot; ${esc(a.source||"TurtleMesh")}</span><br>${esc(a.detail)}</div>`).join("")||'<p class="dim">No alerts.</p>'}
   if(tab=="tak"){const b=s.bridge;kv("k-bridge",[["Nodes to TAK",b.nodes_to_tak],["Chat mesh \u2192 TAK",b.chat_to_tak],["Chat TAK \u2192 mesh",b.chat_to_mesh],["ATAK plugin to TAK",b.atak_to_tak+(b.atak_compressed?" ("+b.atak_compressed+" compressed: position only)":"")]]);
-    $("br-nodes").checked=b.nodes;$("br-atak").checked=b.atak;const sel=$("br-ch"),opts='<option value="-1">off</option>'+m.channels.map(c=>`<option value="${c.index}">${esc(c.name)}</option>`).join("");if(sel._o!=opts){sel._o=opts;sel.innerHTML=opts}sel.value=String(b.chat_channel);
+    $("br-nodes").checked=b.nodes;$("br-atak").checked=b.atak;const sel=$("br-ch"),opts='<option value="-1">off</option>'+chanOpts(true);if(sel._o!=opts){sel._o=opts;sel.innerHTML=opts}sel.value=String(b.chat_channel);
     kv("k-mqtt",[["Proxy",s.mqtt.on?esc(s.mqtt.state):"off (MQTT_PROXY in Settings)"],s.mqtt.error?["Error",`<span class="crit">${esc(s.mqtt.error)}</span>`]:null,["Radio \u2192 broker",s.mqtt.up],["Broker \u2192 radio",s.mqtt.down]]);
     const tc=$("takchat"),sig=s.tak_chat.length+":"+(s.tak_chat.length?s.tak_chat[s.tak_chat.length-1].id:"");if(tc._s!=sig){tc._s=sig;tc.innerHTML=s.tak_chat.map(c=>`<div class="msg ${c.dir}"><div class="h">${esc(c.from)} &rarr; ${esc(c.room)} &middot; ${tm(c.time)}</div>${esc(c.text)}</div>`).join("")||'<p class="dim">No TAK chat yet.</p>';tc.scrollTop=1e9}
     const tk=$("tk-to"),nm=[...new Set(s.contacts.filter(c=>c.type.startsWith("a-f-G-U")).map(c=>c.callsign))].sort().join("|");if(tk._n!=nm){const cur=tk.value;tk._n=nm;tk.innerHTML='<option value="">All Chat Rooms</option>'+nm.split("|").filter(x=>x).map(x=>`<option>${esc(x)}</option>`).join("");tk.value=cur}}
@@ -6489,8 +6555,8 @@ function drawMap(){const t2=ST.tiles||{},sel=$("mp-src");if(!sel.options.length)
   ST.contacts.forEach(c=>L.marker([c.lat,c.lon],{icon:dot("#4fb3ff",12)}).bindTooltip(esc(c.callsign)).addTo(layers))}
 function bnds(){const b=map.getBounds();return {s:b.getSouth(),w:b.getWest(),n:b.getNorth(),e:b.getEast()}}
 async function saveArea(){if(!map)return;const src=$("mp-src").value,zmax=+$("mp-z").value,zmin=Math.max(1,map.getZoom()-4);try{const r=await api("/api/action",{method:"POST",body:JSON.stringify({action:"tiles_plan",src,bounds:bnds(),zmin,zmax})});if(confirm("Save "+r.msg+" of this view on the Hub?"))act("tiles_download",{src,bounds:bnds(),zmin,zmax})}catch(e){toast(e.message,1)}}
-async function loadRadio(){try{radioV=await api("/api/radio");const r=radioV;$("r-long").value=r.owner.long;$("r-short").value=r.owner.short;kv("k-meta",[["Hardware",esc(r.metadata.hw)],["Firmware",esc(r.metadata.firmware)],["Region",esc(r.metadata.region)]]);
-  $("tb-ch").innerHTML="<tr><th>#</th><th>Name</th><th>Role</th><th>Key</th><th>Uplink / downlink</th></tr>"+r.channels.map(c=>`<tr><td>${c.index}</td><td>${esc(c.name||(c.index==0?"(preset name)":""))}</td><td>${["disabled","primary","secondary"][c.role]||c.role}</td><td>${esc(c.psk_kind||"")}</td><td>${c.uplink?"up":""} ${c.downlink?"down":""}</td></tr>`).join("");
+async function loadRadio(){try{radioV=await api("/api/radio");const rp=$("r-pos");rp.innerHTML='<option value="-1">off</option>'+chanOpts(true);rp.value=String(ST?ST.mesh_pos_channel:-1);const r=radioV;$("r-long").value=r.owner.long;$("r-short").value=r.owner.short;kv("k-meta",[["Hardware",esc(r.metadata.hw)],["Firmware",esc(r.metadata.firmware)],["Region",esc(r.metadata.region)]]);
+  $("tb-ch").innerHTML="<tr><th>#</th><th>Name</th><th>Role</th><th>Key</th><th>Uplink / downlink</th></tr>"+r.channels.map(c=>`<tr><td>${c.index}</td><td>${esc(c.name||(c.index==0?"(preset name)":""))}</td><td>${["disabled","primary","secondary"][c.role]||c.role}</td><td>${esc(c.psk_kind||"")}${c.role?(/^AES/.test(c.psk_kind||"")?' <span class="ok">(private)</span>':' <span class="warn">(public)</span>'):""}</td><td>${c.uplink?"up":""} ${c.downlink?"down":""}</td></tr>`).join("");
   $("c-idx").innerHTML=[0,1,2,3,4,5,6,7].map(i=>`<option value="${i}">Channel ${i}</option>`).join("");$("share").innerHTML=r.share_url?'Share link (carries the channel keys): <span style="word-break:break-all">'+esc(r.share_url)+"</span>":"";
   const v=r.values||{};$("r-set").innerHTML=(r.settings||[]).map(st=>{const cur=v[st.key];let inp;if(st.type=="bool")inp=`<select data-k="${st.key}"><option value="">${cur?"on":"off"} (current)</option><option value="true">on</option><option value="false">off</option></select>`;
     else if(st.type=="enum"){const lab=((st.choices||[]).find(c=>c[0]==cur)||[0,cur==null?"?":cur])[1];inp=`<select data-k="${st.key}"><option value="">${esc(lab)} (current)</option>`+(st.choices||[]).map(([k,l])=>`<option value="${k}">${esc(l)}</option>`).join("")+"</select>"}
@@ -6501,9 +6567,17 @@ function saveChan(){const o={index:+$("c-idx").value};if($("c-name").value)o.nam
 function saveConn(){setCfg({RADIO_CONN:$("r-conn").value,RADIO_HOST:$("r-host").value.trim(),RADIO_DEV:$("r-dev").value.trim()||"auto"}).then(()=>act("radio_reconnect"))}
 async function loadCfg(){if(cfgLoaded)return;try{const c=await api("/api/cfg");cfgLoaded=true;$("cfgform").innerHTML=c.map(r=>r.section?`<h4>${esc(r.key.replace(/^#\s*/,""))}</h4>`:`<label>${esc(r.key)}</label><input data-k="${r.key}" ${r.key=="UID"?"readonly":""} ${r.secret?'type="password" placeholder="'+(r.set?"(set - blank keeps it)":"")+'"':""} value="${esc(r.value)}">`).join("")}catch(e){toast(e.message,1)}}
 async function saveCfg(){const o={};document.querySelectorAll("#cfgform input").forEach(i=>{if(i.type=="password"&&i.value==="")return;o[i.dataset.k]=i.value});await setCfg(o)}
+function chanOpts(privateOnly){return (ST?ST.mesh.channels:[]).map(c=>`<option value="${c.index}" ${privateOnly&&!c.private?"disabled":""}>Channel ${c.index}: ${esc(c.name)}${c.private?" (own key)":" (public key"+(privateOnly?" - not allowed)":")")}</option>`).join("")}
+function fillDest(){const dest=$("al-dest"),cur=dest.value,chans=ST?ST.mesh.channels:[],sig=JSON.stringify(chans);if(dest._s===sig)return;dest._s=sig;
+  dest.innerHTML='<option value="off">off</option>'+(chans.length?chanOpts(false):'<option value="" disabled>no channels yet - the radio is not connected</option>')+'<option value="dm">direct message to a node</option>';
+  if(cur&&[...dest.options].some(o=>o.value==cur&&!o.disabled))dest.value=cur}
+function loraNow(){const l=ST&&ST.lora;if(!l)return "";return l.on?"Right now: alerts go out over LoRa to <b>"+esc(l.to)+"</b>"+(l.public?' <span class="warn">(public channel)</span>':"")+", "+esc(l.min)+" and up. Change it here and Save.":"Right now: alerts are <b>not</b> sent on the mesh. Pick a channel or a node and Save to turn them on."}
+function loraDest(){const d=$("al-dest").value,w=$("al-lwarn");$("al-lnow").innerHTML=loraNow();$("al-to").style.display=d=="dm"?"inline-block":"none";const c=(ST?ST.mesh.channels:[]).find(x=>String(x.index)==d);
+  if(c&&!c.private){w.style.display="block";w.textContent=c.name+" uses a public key: anyone on it can read the alerts, which can include device names, IP and MAC addresses. A channel with its own key, or a direct message, is safer."}else w.style.display="none"}
+function loraCfg(){const d=$("al-dest").value;if(d=="off")return {LORA_ALERTS:"0",LORA_ALERT_TO:""};if(d=="dm")return {LORA_ALERTS:"1",LORA_ALERT_TO:$("al-to").value.trim()};return {LORA_ALERTS:"1",LORA_ALERT_CHANNEL:d,LORA_ALERT_TO:""}}
 async function loadAlertCfg(){try{const c=await api("/api/cfg"),g=k=>(c.find(r=>r.key==k)||{}).value||"";const on=g("ALERTS_ON").split(",");$("al-kinds").innerHTML=(ST.alert_kinds||[]).map(([k,l])=>`<label style="margin-right:12px"><input type="checkbox" class="al-k" value="${k}" ${on.includes(k)?"checked":""}> ${esc(l)}</label>`).join("");
-  $("al-marker").value=g("MARKER_MIN_LEVEL")||"warning";$("al-chat").value=g("CHAT_MIN_LEVEL")||"info";$("al-lora").value=g("LORA_ALERT_MIN")||"warning";$("al-to").value=g("LORA_ALERT_TO");$("al-quiet").value=g("QUIET_HOURS");$("al-qcrit").checked=g("QUIET_CRITICAL")!="0"}catch(e){}}
-function saveAlertCfg(){setCfg({ALERTS_ON:[...document.querySelectorAll(".al-k:checked")].map(i=>i.value).join(","),MARKER_MIN_LEVEL:$("al-marker").value,CHAT_MIN_LEVEL:$("al-chat").value,LORA_ALERT_MIN:$("al-lora").value,LORA_ALERT_TO:$("al-to").value.trim(),QUIET_HOURS:$("al-quiet").value.trim(),QUIET_CRITICAL:$("al-qcrit").checked?"1":"0"})}
+  $("al-marker").value=g("MARKER_MIN_LEVEL")||"warning";$("al-chat").value=g("CHAT_MIN_LEVEL")||"info";$("al-lora").value=g("LORA_ALERT_MIN")||"warning";$("al-to").value=g("LORA_ALERT_TO");const dest=$("al-dest");fillDest();dest.value=g("LORA_ALERT_TO")?"dm":(g("LORA_ALERTS")=="1"&&g("LORA_ALERT_CHANNEL")!==""?g("LORA_ALERT_CHANNEL"):"off");loraDest();$("al-quiet").value=g("QUIET_HOURS");$("al-qcrit").checked=g("QUIET_CRITICAL")!="0"}catch(e){}}
+function saveAlertCfg(){setCfg({ALERTS_ON:[...document.querySelectorAll(".al-k:checked")].map(i=>i.value).join(","),MARKER_MIN_LEVEL:$("al-marker").value,CHAT_MIN_LEVEL:$("al-chat").value,LORA_ALERT_MIN:$("al-lora").value,...loraCfg(),QUIET_HOURS:$("al-quiet").value.trim(),QUIET_CRITICAL:$("al-qcrit").checked?"1":"0"})}
 function pane(k,btn){["cp","cr","en"].forEach(x=>$("p-"+x).style.display=x==k?"block":"none");document.querySelectorAll("#seg button").forEach(b=>b.classList.toggle("on",b==btn))}
 async function sendFile(f,hdrs){const h=Object.assign({"X-Filename":f.name,"Content-Type":"application/octet-stream"},hdrs||{});for(const k in h)h[k]=encodeURIComponent(h[k]);return api("/api/upload",{method:"POST",headers:h,body:await f.arrayBuffer()})}
 async function importPkg(){const f=$("cp-file").files[0];if(!f)return toast("Choose the .zip first",1);const h={};if($("cp-cpw").value)h["X-Client-Password"]=$("cp-cpw").value;if($("cp-tpw").value)h["X-CA-Password"]=$("cp-tpw").value;try{const d=await sendFile(f,h);toast(d.msg);refresh()}catch(e){toast(e.message,1)}}
@@ -6547,7 +6621,7 @@ ERR=$(cd "$APP" && "$PY" -c 'import collections, hashlib, json, select, socket, 
 import meshproto, radiocfg, sigint, ttcrypto' 2>&1) \
     || fail "Python on this Hub is missing something: $(echo "$ERR" | tail -n 1)"
 
-LED SETUP 2>/dev/null
+[ -n "$TURTLESHELL" ] || LED SETUP 2>/dev/null    # in TurtleShell, TurtleTAK owns the LED
 cd "$APP" || fail "cannot open $APP"
 TM_STARTED=1
 trap - EXIT

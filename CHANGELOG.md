@@ -1,6 +1,16 @@
 # Changelog
 
-TurtleMesh versions. Newest first.
+TurtleMesh versions (the payload in `payloads/library/general/TurtleMesh-Hub`). Newest first.
+
+## Hub Edition 1.0.1
+- **Ready for TurtleShell**, the payload that runs TurtleTAK and TurtleMesh together: inside it, TurtleMesh leaves the Hub's LED to TurtleTAK.
+- **The radio's GPS fix is shared with TurtleTAK** while both run, so the Hub reports one position on TAK and the mesh.
+- **Nothing goes out on a mesh channel until you choose one.** Channel 0 is public on most meshes.
+  - Alerts over LoRa are off until you pick a channel or a node; a public channel gets a warning (alerts can carry device names, IP and MAC addresses).
+  - The TAK chat bridge and the Hub's position only use channels with their own key.
+  - The Radio tab marks each channel's key as public or private, and the Alerts tab says in plain words where alerts go right now.
+  - Updating from 1.0.0 turns off the old channel 0 defaults once, with a Hub notification.
+- **Windows line endings are fixed automatically**: a `payload.sh` pasted or saved on Windows now runs normally.
 
 ## Hub Edition 1.0.0
 - First release for the LAN Turtle Hub, as one `payload.sh`: Bash for the Hub commands, with a Python 3 service and a web page written from it.
