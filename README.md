@@ -16,7 +16,7 @@ Also see [TurtleTAK](https://github.com/SECT0101/TurtleTAK) for TAK on the same 
 
 | Edition | Device | Version | Description |
 |---|---|---|---|
-| [TurtleMesh Hub Edition](payloads/library/general/TurtleMesh-Hub/) | LAN Turtle Hub | 1.0.1 | A Meshtastic radio over Wi-Fi or USB, with mesh chat, a node list and an offline map; radio settings and channels, traceroute and position requests; mesh watch alerts (new nodes, watched nodes going quiet, low battery, detection sensors); alerts over LoRa, including TurtleTAK's while it runs; direct-message commands from any node; an optional mesh ↔ TAK bridge, including Meshtastic ATAK plugin users; a private MQTT proxy to your own broker; location from the radio's GPS, a USB GPS, your phone, a site or the public IP; and a web console on port 8485. |
+| [TurtleMesh Hub Edition](payloads/library/general/TurtleMesh-Hub/) | LAN Turtle Hub | 1.0.2 | A Meshtastic radio over Wi-Fi or USB, with mesh chat, a node list and an offline map; radio settings and channels, traceroute and position requests; mesh watch alerts (new nodes, watched nodes going quiet, low battery, detection sensors); alerts over LoRa, including TurtleTAK's while it runs; direct-message commands from any node; an optional mesh ↔ TAK bridge, including Meshtastic ATAK plugin users; a private MQTT proxy to your own broker; location from the radio's GPS, a USB GPS, your phone, a site or the public IP; and a web console on port 8485. |
 
 ## Repository layout
 

@@ -2,6 +2,10 @@
 
 TurtleMesh versions (the payload in `payloads/library/general/TurtleMesh-Hub`). Newest first.
 
+## Hub Edition 1.0.2
+- Alerts in TAK chat and over LoRa now read `[TURTLE-MESH] CRITICAL <title> - <detail>` and `WARNING`, the same wording as the other SECT0101 TAK payloads (was `ALERT` and `WARN`). TurtleTAK's alerts sent over LoRa use the same words.
+- README: every setting is listed, with its default and what it does.
+
 ## Hub Edition 1.0.1
 - **Ready for TurtleShell**, the payload that runs TurtleTAK and TurtleMesh together: inside it, TurtleMesh leaves the Hub's LED to TurtleTAK.
 - **The radio's GPS fix is shared with TurtleTAK** while both run, so the Hub reports one position on TAK and the mesh.

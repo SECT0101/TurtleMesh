@@ -2,7 +2,7 @@
 # Title: TurtleMesh Hub Edition
 # Description: Meshtastic on the LAN Turtle Hub - a Meshtastic radio over Wi-Fi or USB with mesh chat, a node map, mesh watch and sensor alerts, alerts over LoRa, a mesh <-> TAK bridge, DM commands, a private MQTT proxy and a web console
 # Author: SECT0101
-# Version: 1.0.1
+# Version: 1.0.2
 # Category: General
 # Target: LAN Turtle Hub with a Meshtastic radio (Wi-Fi on the same network, or USB on the Hub)
 #
@@ -119,7 +119,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from xml.sax.saxutils import escape as _xesc
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 # ---- DNS: the Hub's C library (musl) can fail a lookup that asks for IPv4 and IPv6 at once
 # ("[Errno -5] Name has no usable address") while an IPv4-only lookup works - that is why ping works.
@@ -1348,7 +1348,7 @@ def raise_alert(kind, level, title, detail, marker=True, key=None, at=None):
     notify("error" if level == "critical" else ("warning" if level == "warning" else "info"), "%s: %s" % (title, detail))
     if level != "info" and not quiet:
         led(flash="SPECIAL" if level == "warning" else "FAIL2", secs=60)
-    line = "[%s] %s %s - %s" % (cfg("CALLSIGN"), {"critical": "ALERT", "warning": "WARNING"}.get(level, "INFO"),
+    line = "[%s] %s %s - %s" % (cfg("CALLSIGN"), {"critical": "CRITICAL", "warning": "WARNING"}.get(level, "INFO"),
                                 title, detail)
     p = S["pos"]
     if marker and cfgb("ALERT_MARKER") and (p["lat"] is not None or at) and rank >= LEVELS.get(cfg("MARKER_MIN_LEVEL"), 1):
@@ -2656,7 +2656,7 @@ class LoraAlerts:
         self.primed = False
 
     def text(self, a, source):
-        tag = {"critical": "ALERT", "warning": "WARN"}.get(a["level"], "INFO")
+        tag = {"critical": "CRITICAL", "warning": "WARNING"}.get(a["level"], "INFO")
         who = turtletak_cfg().get("CALLSIGN", "TurtleTAK") if source == "turtletak" else cfg("CALLSIGN")
         return "[%s] %s %s - %s" % (who, tag, a["title"], a["detail"])
 
